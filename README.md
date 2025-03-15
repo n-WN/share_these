@@ -47,6 +47,16 @@ tracing-subscriber = "0.3.19"
 tower-http = { version = "0.6.2", features = ["trace"] }
 ```
 
+## log
+
+```
+> ./share_these
+2025-03-15T19:28:46.760080Z  INFO Server running at http://localhost:3000
+2025-03-15T19:28:52.926080Z  INFO File list requested for root directory ip=127.0.0.1
+2025-03-15T19:28:53.889118Z  INFO File served: "/Users/Downloads/funny.js" ip=127.0.0.1
+2025-03-15T19:29:30.927127Z  INFO Directory listing for: how ip=127.0.0.1
+```
+
 ## TODO
 
 - [ ] 支持自定义端口
