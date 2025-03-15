@@ -51,3 +51,7 @@ tower-http = { version = "0.6.2", features = ["trace"] }
 - [ ] 权限控制 (random token)
 - [ ] 待分享的文件载入内存, 方便分享给多人
 - [ ] P2P分享 (仅内网, 下载客户端后自动触发做种)
+
+## License
+
+MPL-2.0
