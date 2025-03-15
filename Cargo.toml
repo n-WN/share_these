@@ -1,0 +1,15 @@
+[package]
+name = "share_these"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# "?" is shorter than ".unwrap()"
+anyhow = "1.0.97"
+# full features because of laziness
+tokio = { version = "1.44.1", features = ["full"] }
+# import the greatest framework
+axum = { version = "0.8.1" }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+tower-http = { version = "0.6.2", features = ["trace"] }
