@@ -10,6 +10,10 @@ share these files in current directory (including subdirectories)
 
 > from the perspective of a programmer
 
+<img width="1218" alt="demo" src="https://github.com/user-attachments/assets/ddf6cb04-d998-4888-b30c-e474f5aacc70" />
+
+## Why
+
 为什么要写这个程序？
 
 Why write this program?
