@@ -1,10 +1,12 @@
-use axum::{
-    response::{Html, IntoResponse, Response}
-};
 use crate::format_size;
+use axum::response::{Html, IntoResponse, Response};
 
 // 渲染文件列表页面
-pub fn render_file_list(folders: Vec<(String, String, u64)>, files: Vec<(String, String, u64)>, current_path: Option<&str>) -> Response {
+pub fn render_file_list(
+    folders: Vec<(String, String, u64)>,
+    files: Vec<(String, String, u64)>,
+    current_path: Option<&str>,
+) -> Response {
     // 生成面包屑导航
     // https://developer.mozilla.org/zh-CN/docs/Glossary/Breadcrumb
     let mut breadcrumbs_html = String::from(r#"<a href="/">Home</a>"#);
@@ -20,7 +22,8 @@ pub fn render_file_list(folders: Vec<(String, String, u64)>, files: Vec<(String,
                 current.push_str("/");
                 current.push_str(part);
 
-                let name = if idx == parts.len() - 1 { // 最后一个部分，完整显示
+                let name = if idx == parts.len() - 1 {
+                    // 最后一个部分，完整显示
                     part.to_string()
                 } else {
                     if part.len() > 10 {
@@ -30,7 +33,8 @@ pub fn render_file_list(folders: Vec<(String, String, u64)>, files: Vec<(String,
                     }
                 };
 
-                breadcrumbs_html.push_str(&format!(r#" / <a href="/files{}">{}</a>"#, current, name));
+                breadcrumbs_html
+                    .push_str(&format!(r#" / <a href="/files{}">{}</a>"#, current, name));
             }
         }
     }
@@ -192,7 +196,7 @@ pub fn render_file_list(folders: Vec<(String, String, u64)>, files: Vec<(String,
                     "iso" => "💿",
                     "torrent" => "🧲",
                     "bak" | "old" | "temp" => "🗑️",
-                    _ => "📄"
+                    _ => "📄",
                 };
 
                 format!(

@@ -13,3 +13,11 @@ axum = { version = "0.8.1" }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 tower-http = { version = "0.6.2", features = ["trace"] }
+
+[profile.release]
+lto = true          # Link Time Optimization
+opt-level = "z"     # Optimize for size
+codegen-units = 1   # Single-threaded compilation
+debug = false       # No debug info
+panic = "abort"     # Abort on panic
+strip = true        # Strip symbols

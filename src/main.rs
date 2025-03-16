@@ -1,16 +1,17 @@
 use axum::{
+    extract::{ConnectInfo, Path, State},
+    http::{header::CONTENT_TYPE, StatusCode},
+    response::{Html, IntoResponse, Response},
     routing::get,
     Router,
-    response::{Html, IntoResponse, Response},
-    extract::{Path, ConnectInfo, State},
-    http::StatusCode,
 };
+use std::net::SocketAddr;
 use std::{path::PathBuf, sync::Arc};
 use tokio::fs;
-use tracing::{info, error, Level};
-use tracing_subscriber::FmtSubscriber;
-use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
+use tracing::{error, info, Level};
+use tracing_subscriber::FmtSubscriber;
+use anyhow::{Context, Result};
 
 mod templates;
 use templates::render_file_list;
@@ -22,16 +23,19 @@ struct AppState {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     // 初始化日志
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
         .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+
+    tracing::subscriber::set_global_default(subscriber)
+        .context("Failed to set global tracing subscriber")?;
 
     // 获取工作目录作为根目录
-    let root_dir = std::env::current_dir()?;
+    let root_dir = std::env::current_dir()
+        .context("Failed to get current working directory")?;
     let state = AppState {
         root_dir: Arc::new(root_dir),
     };
@@ -46,11 +50,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 监听端口 3000
     let addr = "0.0.0.0:3000";
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .context(format!("Failed to bind to address {}", addr))?;
     info!("Server running at http://localhost:3000");
 
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+        .await
+        .context("Server error")?;
 
     Ok(())
 }
@@ -62,45 +72,18 @@ async fn list_files(
 ) -> Response {
     let dir = &*state.root_dir;
 
-    match fs::read_dir(dir).await {
-        Ok(mut entries) => {
-            let mut files = Vec::new();
-            let mut folders = Vec::new();
-
-            // 收集文件和文件夹信息
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                if let Ok(metadata) = entry.metadata().await {
-                    let path = entry.path();
-                    let name = path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("Unknown");
-
-                    let relative_path = path.strip_prefix(dir)
-                        .unwrap_or(&path)
-                        .to_string_lossy();
-
-                    // 区分文件和文件夹
-                    if metadata.is_dir() {
-                        folders.push((name.to_string(), relative_path.to_string(), 0));
-                    } else {
-                        files.push((name.to_string(), relative_path.to_string(), metadata.len()));
-                    }
-                }
-            }
-
-            // 按字母顺序排序
-            folders.sort_by(|a, b| a.0.cmp(&b.0));
-            files.sort_by(|a, b| a.0.cmp(&b.0));
-
+    match read_directory(dir, None).await {
+        Ok((folders, files)) => {
             info!(ip = %addr.ip(), "File list requested for root directory");
             render_file_list(folders, files, Some("/"))
-        },
+        }
         Err(e) => {
-            error!(ip = %addr.ip(), "Failed to read directory: {}", e);
+            error!(ip = %addr.ip(), "Failed to read directory: {:#}", e);
             Html(format!(
-                r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#,
+                r#"<html><body><h1>Error</h1><p>{:#}</p></body></html>"#,
                 e
-            )).into_response()
+            ))
+                .into_response()
         }
     }
 }
@@ -121,53 +104,18 @@ async fn serve_file(
 
     // 如果是目录，则显示目录内容
     if full_path.is_dir() {
-        match fs::read_dir(&full_path).await {
-            Ok(mut entries) => {
-                let mut files = Vec::new();
-                let mut folders = Vec::new();
-
-                // 收集文件和文件夹信息
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    if let Ok(metadata) = entry.metadata().await {
-                        let entry_path = entry.path();
-                        let name = entry_path.file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("Unknown");
-
-                        // 获取相对于根目录的路径
-                        let relative_path = if let Ok(rel) = entry_path.strip_prefix(&*state.root_dir) {
-                            rel.to_string_lossy().to_string()
-                        } else {
-                            // 如果无法相对于根目录，则使用相对于当前目录的路径
-                            if let Some(rel) = entry_path.file_name() {
-                                format!("{}/{}", path, rel.to_string_lossy())
-                            } else {
-                                name.to_string()
-                            }
-                        };
-
-                        // 区分文件和文件夹
-                        if metadata.is_dir() {
-                            folders.push((name.to_string(), relative_path, 0));
-                        } else {
-                            files.push((name.to_string(), relative_path, metadata.len()));
-                        }
-                    }
-                }
-
-                // 按字母顺序排序
-                folders.sort_by(|a, b| a.0.cmp(&b.0));
-                files.sort_by(|a, b| a.0.cmp(&b.0));
-
+        match read_directory(&full_path, Some(&path)).await {
+            Ok((folders, files)) => {
                 info!(ip = %addr.ip(), "Directory listing for: {}", path);
                 render_file_list(folders, files, Some(&path))
-            },
+            }
             Err(e) => {
-                error!(ip = %addr.ip(), "Failed to read directory: {}", e);
+                error!(ip = %addr.ip(), "Failed to read directory: {:#}", e);
                 Html(format!(
-                    r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#,
+                    r#"<html><body><h1>Error</h1><p>{:#}</p></body></html>"#,
                     e
-                )).into_response()
+                ))
+                    .into_response()
             }
         }
     } else {
@@ -175,30 +123,83 @@ async fn serve_file(
         match fs::read(&full_path).await {
             Ok(content) => {
                 info!(ip = %addr.ip(), "File served: {:?}", full_path);
-
-                // 简单的 MIME 类型检测
-                let content_type = match full_path.extension().and_then(|e| e.to_str()) {
-                    Some("html") | Some("htm") => "text/html",
-                    Some("css") => "text/css",
-                    Some("js") => "application/javascript",
-                    Some("json") => "application/json",
-                    Some("png") => "image/png",
-                    Some("jpg") | Some("jpeg") => "image/jpeg",
-                    Some("gif") => "image/gif",
-                    Some("svg") => "image/svg+xml",
-                    Some("pdf") => "application/pdf",
-                    Some("txt") | Some("md") => "text/plain",
-                    _ => "application/octet-stream",
-                };
-
-                ([(axum::http::header::CONTENT_TYPE, content_type)], content).into_response()
-            },
+                let content_type = determine_content_type(&full_path);
+                ([(CONTENT_TYPE, content_type)], content).into_response()
+            }
             Err(e) => {
-                error!(ip = %addr.ip(), "Failed to read file: {:?}, error: {}", full_path, e);
+                error!(ip = %addr.ip(), "Failed to read file: {:?}, error: {:#}", full_path, e);
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
         }
     }
+}
+
+// 辅助函数：确定内容类型
+fn determine_content_type(path: &PathBuf) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") | Some("htm") => "text/html",
+        Some("css") => "text/css",
+        Some("js") => "application/javascript",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        Some("txt") | Some("md") => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+// 辅助函数：读取目录内容
+async fn read_directory(
+    dir: &PathBuf,
+    path_prefix: Option<&String>,
+) -> Result<(Vec<(String, String, u64)>, Vec<(String, String, u64)>)> {
+    let mut entries = fs::read_dir(dir)
+        .await
+        .with_context(|| format!("Failed to read directory {:?}", dir))?;
+
+    let mut files = Vec::new();
+    let mut folders = Vec::new();
+
+    while let Some(entry) = entries.next_entry()
+        .await
+        .with_context(|| format!("Failed to read directory entry in {:?}", dir))?
+    {
+        let metadata = entry.metadata()
+            .await
+            .with_context(|| format!("Failed to read metadata for {:?}", entry.path()))?;
+
+        let entry_path = entry.path();
+        let name = entry_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
+
+        // 处理相对路径
+        let relative_path = if let Some(prefix) = path_prefix {
+            format!("{}/{}", prefix, name)
+        } else {
+            entry_path.strip_prefix(dir)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| name.clone())
+        };
+
+        // 区分文件和文件夹
+        if metadata.is_dir() {
+            folders.push((name, relative_path, 0));
+        } else {
+            files.push((name, relative_path, metadata.len()));
+        }
+    }
+
+    // 按字母顺序排序
+    folders.sort_by(|a, b| a.0.cmp(&b.0));
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+
+    Ok((folders, files))
 }
 
 // 格式化文件大小
