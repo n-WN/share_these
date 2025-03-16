@@ -10,6 +10,10 @@ share these files in current directory (including subdirectories)
 
 > from the perspective of a programmer
 
+<img width="1218" alt="demo" src="https://github.com/user-attachments/assets/ddf6cb04-d998-4888-b30c-e474f5aacc70" />
+
+## Why
+
 为什么要写这个程序？
 
 Why write this program?
@@ -41,6 +45,16 @@ axum = { version = "0.8.1" }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 tower-http = { version = "0.6.2", features = ["trace"] }
+```
+
+## log
+
+```
+> ./share_these
+2025-03-15T19:28:46.760080Z  INFO Server running at http://localhost:3000
+2025-03-15T19:28:52.926080Z  INFO File list requested for root directory ip=127.0.0.1
+2025-03-15T19:28:53.889118Z  INFO File served: "/Users/Downloads/funny.js" ip=127.0.0.1
+2025-03-15T19:29:30.927127Z  INFO Directory listing for: how ip=127.0.0.1
 ```
 
 ## TODO
