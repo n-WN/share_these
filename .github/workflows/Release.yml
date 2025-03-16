@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Install dependencies
+      run: sudo apt-get install -y musl-tools
+
+    - name: Build release binary
+      run: |
+        rustup target add x86_64-unknown-linux-musl
+        cargo build --release --target x86_64-unknown-linux-musl
+
+    - name: Strip binary
+      run: strip target/x86_64-unknown-linux-musl/release/share_these
+
+    - name: Archive release binary
+      run: |
+        tar -czvf share_these.tar.gz -C target/x86_64-unknown-linux-musl/release share_these
+
+    - name: Create GitHub Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.sha }}
+        release_name: Release ${{ github.sha }}
+        body: |
+          Release for commit ${{ github.sha }}
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./share_these.tar.gz
+        asset_name: share_these.tar.gz
+        asset_content_type: application/gzip
