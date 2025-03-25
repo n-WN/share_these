@@ -35,8 +35,8 @@ share these files in current directory (including subdirectories)
 ### 预编译二进制文件
 
 ```shell
-# 下载最新版本
-curl -L https://github.com/n-WN/share_these/releases/latest/download/share_these-linux-amd64 -o share_these
+# 下载最新版本 - Linux
+curl -L https://github.com/n-WN/share_these/releases/latest/download/share_these-linux-x86_64 -o share_these
 chmod +x share_these
 ```
 
