@@ -2,6 +2,11 @@
 name = "share_these"
 version = "0.1.0"
 edition = "2021"
+authors = ["n-WN"]
+description = "A simple file sharing web server"
+license = "MPL-2"
+repository = "https://github.com/n-WN/share_these"
+readme = "README.md"
 
 [dependencies]
 # "?" is shorter than ".unwrap()"
