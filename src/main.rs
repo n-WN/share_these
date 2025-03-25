@@ -291,6 +291,7 @@ async fn stream_file(
         .with_context(|| format!("Failed to open file {:?}", path))?;
     
     // 创建流，使用8KB的缓冲区
+    // TODO 根据文件大小不同, 分配不同大小的缓冲区
     let reader_stream = ReaderStream::with_capacity(file, 8 * 1024);
     let body = Body::from_stream(reader_stream);
     

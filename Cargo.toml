@@ -36,3 +36,7 @@ codegen-units = 1   # Single-threaded compilation
 debug = false       # No debug info
 panic = "abort"     # Abort on panic
 strip = true        # Strip symbols
+# flamegraph
+# debug = true  # 保留调试符号
+# strip = false # 禁止符号剥离
+# cargo flamegraph --root --bin share_these -- --port 8080
