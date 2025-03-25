@@ -9,7 +9,7 @@ use axum::{
 use std::net::SocketAddr;
 use std::{path::PathBuf, sync::Arc, io::SeekFrom};
 use tokio::fs::{self, File};
-use tokio::io::{AsyncSeekExt, AsyncRead};
+use tokio::io::{AsyncSeekExt, AsyncRead, AsyncReadExt};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -17,7 +17,8 @@ use anyhow::{Context, Result, anyhow};
 use tokio_util::io::ReaderStream;
 use std::cmp::min;
 use clap::Parser;
-// use futures::Stream;
+use tower::limit::ConcurrencyLimitLayer;
+use moka::future::Cache;
 
 mod templates;
 use templates::render_file_list;
@@ -62,7 +63,11 @@ const PKG_REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 struct AppState {
     root_dir: Arc<PathBuf>,
     author: Author,
+    cache: Cache<String, Vec<u8>>,
 }
+
+// 最大缓存文件大小 (1MB)
+const MAX_CACHE_FILE_SIZE: u64 = 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -97,25 +102,24 @@ async fn main() -> Result<()> {
         website: None,
         github: Some(PKG_REPOSITORY.to_string()),
     };
+
+    // 创建缓存
+    let cache = Cache::new(100); // 缓存最多100个文件
     
     let state = AppState {
         root_dir: Arc::new(root_dir),
         author,
+        cache,
     };
 
     // 构建应用程序
-    // let app = Router::new()
-    //     .route("/", get(list_files))
-    //     // 使用 {*path} 来捕获所有路径段，包括嵌套路径
-    //     .route("/files/{*path}", get(serve_file))
-    //     .layer(TraceLayer::new_for_http())
-    //     .with_state(state);
     let app = Router::new()
         .route("/", get(list_files))
         // 使用 {*path} 来捕获所有路径段，包括嵌套路径
         .route("/files/{*path}", get(serve_file))
         .layer(TraceLayer::new_for_http())
-        .with_state(state.clone());  // 克隆 state 而非转移所有权
+        .layer(ConcurrencyLimitLayer::new(64)) // 限制最大并发请求数为64
+        .with_state(state.clone()); // https://github.com/n-WN/share_these/blob/80c267ed15729df5daadb4b480e05cf120d3abc7/src/main.rs#L135
 
     // 使用用户指定的地址和端口
     let addr = format!("{}:{}", args.host, args.port);
@@ -126,8 +130,8 @@ async fn main() -> Result<()> {
     // 如果主机是0.0.0.0，显示时用localhost方便用户访问
     let display_host = if args.host == "0.0.0.0" { "localhost" } else { &args.host };
     info!("Server running at http://{}:{}", display_host, args.port);
-
-    // println!("项目根目录: {}", root_dir.display());
+    
+    // 统一使用state.root_dir而不是单独打印root_dir
     println!("项目根目录: {}", state.root_dir.display());
     println!("访问地址: http://{}:{}", display_host, args.port);
     println!("按 Ctrl+C 停止服务");
@@ -172,6 +176,12 @@ async fn serve_file(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Response {
+    // 检查路径安全性
+    if path.contains("..") {
+        error!(ip = %addr.ip(), "安全问题: 路径包含'..'序列: {}", path);
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
     let full_path = state.root_dir.join(&path);
 
     // 检查文件是否存在
@@ -197,19 +207,45 @@ async fn serve_file(
             }
         }
     } else {
+        // 检查缓存 - 使用await等待Future完成
+        if let Some(cached_data) = state.cache.get(&path).await {
+            info!(ip = %addr.ip(), "Serving cached file: {:?}", full_path);
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, determine_content_type(&full_path))
+                .header(CONTENT_LENGTH, cached_data.len().to_string())
+                .body(Body::from(cached_data))
+                .unwrap()
+                .into_response();
+        }
+
         // 流式传输文件内容
-        match stream_file(&full_path, &headers, addr.ip().to_string()).await {
+        match stream_file(&full_path, &path, &headers, addr.ip().to_string(), &state.cache).await {
             Ok(response) => response,
             Err(e) => {
                 error!(ip = %addr.ip(), "Failed to stream file: {:?}, error: {:#}", full_path, e);
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                match e.downcast_ref::<std::io::Error>() {
+                    Some(io_err) if io_err.kind() == std::io::ErrorKind::PermissionDenied => {
+                        StatusCode::FORBIDDEN.into_response()
+                    },
+                    Some(io_err) if io_err.kind() == std::io::ErrorKind::NotFound => {
+                        StatusCode::NOT_FOUND.into_response()
+                    },
+                    _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                }
             }
         }
     }
 }
 
 // 流式传输文件
-async fn stream_file(path: &PathBuf, headers: &HeaderMap, client_ip: String) -> Result<Response> {
+async fn stream_file(
+    path: &PathBuf, 
+    cache_key: &str,
+    headers: &HeaderMap, 
+    client_ip: String, 
+    cache: &Cache<String, Vec<u8>>
+) -> Result<Response> {
     // 获取文件元数据
     let metadata = fs::metadata(path).await
         .with_context(|| format!("Failed to get metadata for {:?}", path))?;
@@ -226,12 +262,36 @@ async fn stream_file(path: &PathBuf, headers: &HeaderMap, client_ip: String) -> 
     // 标准请求 - 流式传输整个文件
     info!(ip = %client_ip, "Streaming full file: {:?}", path);
     
-    // 打开文件
+    // 如果文件小于阈值，先读入内存然后缓存并返回
+    if file_size <= MAX_CACHE_FILE_SIZE {
+        // 添加日志，记录哪些文件被缓存
+        info!(ip = %client_ip, "Caching small file: {:?} ({} bytes)", path, file_size);
+        
+        let mut file = File::open(path).await
+            .with_context(|| format!("Failed to open file {:?}", path))?;
+        
+        let mut buffer = Vec::with_capacity(file_size as usize);
+        file.read_to_end(&mut buffer).await
+            .with_context(|| format!("Failed to read file {:?}", path))?;
+        
+        // 缓存文件内容
+        cache.insert(cache_key.to_string(), buffer.clone()).await;
+        
+        // 设置响应头
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert(CONTENT_TYPE, content_type.parse().unwrap());
+        response_headers.insert(CONTENT_LENGTH, file_size.to_string().parse().unwrap());
+        response_headers.insert(ACCEPT_RANGES, "bytes".parse().unwrap());
+        
+        return Ok((StatusCode::OK, response_headers, Body::from(buffer)).into_response());
+    }
+    
+    // 对于大文件，使用流式传输
     let file = File::open(path).await
         .with_context(|| format!("Failed to open file {:?}", path))?;
     
-    // 创建流
-    let reader_stream = ReaderStream::new(file);
+    // 创建流，使用8KB的缓冲区
+    let reader_stream = ReaderStream::with_capacity(file, 8 * 1024);
     let body = Body::from_stream(reader_stream);
     
     // 设置响应头
@@ -276,9 +336,13 @@ async fn handle_range_request(
         range_parts[1].parse::<u64>().map_err(|_| anyhow!("Invalid range end"))? 
     };
     
-    // 验证范围有效性
-    if start > end || start >= file_size {
-        return Err(anyhow!("Range out of bounds"));
+    // 验证范围有效性并提供更详细的错误信息
+    if start > end {
+        return Err(anyhow!("Invalid range: start ({}) > end ({})", start, end));
+    }
+    
+    if start >= file_size {
+        return Err(anyhow!("Range start ({}) exceeds file size ({})", start, file_size));
     }
     
     // 范围长度和实际结束位置
@@ -296,7 +360,7 @@ async fn handle_range_request(
     
     // 创建自定义流以限制读取的字节数
     let bounded_file = BoundedReader::new(file, content_length);
-    let reader_stream = ReaderStream::new(bounded_file);
+    let reader_stream = ReaderStream::with_capacity(bounded_file, 8 * 1024); // 设置8KB缓冲区
     let body = Body::from_stream(reader_stream);
     
     // 设置响应头
